@@ -18,6 +18,7 @@ from auth_roles import (
     ROLE_MANAGER,
     role_label_ar,
 )
+from config import APP_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -1030,7 +1031,7 @@ class LoginApp(ctk.CTk):
         self.db = db
         self.on_success = on_success
         self.title("تسجيل الدخول")
-        self.geometry("440x480")
+        self.geometry("440x515")
         self.resizable(False, False)
 
         self.grid_columnconfigure(0, weight=0)
@@ -1079,7 +1080,25 @@ class LoginApp(ctk.CTk):
             row=4, column=0, columnspan=2, padx=20, pady=(8, 4), sticky="e"
         )
         self.pass_entry = ctk.CTkEntry(self, font=("Arial", 13), height=36, show="*", justify="right")
-        self.pass_entry.grid(row=5, column=0, columnspan=2, padx=20, pady=(0, 10), sticky="ew")
+        self.pass_entry.grid(row=5, column=0, columnspan=2, padx=20, pady=(0, 4), sticky="ew")
+
+        self._login_show_password = tk.BooleanVar(value=False)
+
+        def _sync_login_password_visibility() -> None:
+            vis = self._login_show_password.get()
+            ch = "" if vis else "*"
+            self.pass_entry.configure(show=ch)
+            if self._bootstrap_mode:
+                self.confirm_entry.configure(show=ch)
+
+        self._login_show_pw_check = ctk.CTkCheckBox(
+            self,
+            text="إظهار كلمة المرور",
+            variable=self._login_show_password,
+            command=_sync_login_password_visibility,
+            font=("Arial", 11),
+        )
+        self._login_show_pw_check.grid(row=6, column=0, columnspan=2, padx=20, pady=(0, 8), sticky="e")
 
         self.confirm_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.confirm_frame.grid_columnconfigure(0, weight=1)
@@ -1091,10 +1110,10 @@ class LoginApp(ctk.CTk):
                 self.confirm_frame, font=("Arial", 13), height=36, show="*", justify="right"
             )
             self.confirm_entry.grid(row=1, column=0, pady=(0, 0), sticky="ew")
-            self.confirm_frame.grid(row=6, column=0, columnspan=2, padx=20, pady=0, sticky="ew")
+            self.confirm_frame.grid(row=7, column=0, columnspan=2, padx=20, pady=0, sticky="ew")
 
         self.status_label = ctk.CTkLabel(self, text="", font=("Arial", 11), text_color="#e74c3c")
-        self.status_label.grid(row=7, column=0, columnspan=2, padx=20, pady=(12, 8), sticky="e")
+        self.status_label.grid(row=8, column=0, columnspan=2, padx=20, pady=(12, 8), sticky="e")
 
         btn_text = "إنشاء والدخول" if self._bootstrap_mode else "دخول"
         ctk.CTkButton(
@@ -1105,12 +1124,23 @@ class LoginApp(ctk.CTk):
             fg_color="#25d366",
             hover_color="#20c354",
             command=self._submit,
-        ).grid(row=8, column=0, columnspan=2, padx=20, pady=(8, 24), sticky="ew")
+        ).grid(row=9, column=0, columnspan=2, padx=20, pady=(8, 8), sticky="ew")
+
+        self.grid_rowconfigure(10, weight=1)
+        ctk.CTkLabel(
+            self,
+            text=APP_VERSION,
+            font=("Arial", 11),
+            text_color="#888888",
+        ).grid(row=11, column=0, columnspan=2, padx=20, pady=(0, 14), sticky="s")
 
         if not self.db.db:
             self.status_label.configure(text="Firebase غير متصل — أضف serviceAccountKey.json")
             self.user_entry.configure(state="disabled")
             self.pass_entry.configure(state="disabled")
+            self._login_show_pw_check.configure(state="disabled")
+            if self._bootstrap_mode:
+                self.confirm_entry.configure(state="disabled")
 
         self.user_entry.focus()
 
@@ -1162,7 +1192,7 @@ class AddEditUserModal(ctk.CTkToplevel):
         self.user = user
         self.on_save = on_save
         self.title("مستخدم جديد" if not user else "تعديل مستخدم")
-        self.geometry("480x420")
+        self.geometry("480x455")
         self.resizable(False, False)
         self.grid_columnconfigure(0, weight=1)
 
@@ -1180,10 +1210,25 @@ class AddEditUserModal(ctk.CTkToplevel):
             font=("Arial", 12, "bold"),
         ).grid(row=2, column=0, padx=16, pady=(8, 4), sticky="e")
         self.password_entry = ctk.CTkEntry(self, font=("Arial", 13), height=34, show="*", justify="right")
-        self.password_entry.grid(row=3, column=0, padx=16, pady=(0, 10), sticky="ew")
+        self.password_entry.grid(row=3, column=0, padx=16, pady=(0, 4), sticky="ew")
+
+        self._user_modal_show_password = tk.BooleanVar(value=False)
+
+        def _sync_user_modal_password_visibility() -> None:
+            vis = self._user_modal_show_password.get()
+            self.password_entry.configure(show="" if vis else "*")
+
+        self._user_modal_show_pw_check = ctk.CTkCheckBox(
+            self,
+            text="إظهار كلمة المرور",
+            variable=self._user_modal_show_password,
+            command=_sync_user_modal_password_visibility,
+            font=("Arial", 11),
+        )
+        self._user_modal_show_pw_check.grid(row=4, column=0, padx=16, pady=(0, 10), sticky="e")
 
         ctk.CTkLabel(self, text="الدور:", font=("Arial", 12, "bold")).grid(
-            row=4, column=0, padx=16, pady=(8, 4), sticky="e"
+            row=5, column=0, padx=16, pady=(8, 4), sticky="e"
         )
         self.role_combo = ctk.CTkComboBox(
             self,
@@ -1192,7 +1237,7 @@ class AddEditUserModal(ctk.CTkToplevel):
             height=34,
             state="readonly",
         )
-        self.role_combo.grid(row=5, column=0, padx=16, pady=(0, 16), sticky="ew")
+        self.role_combo.grid(row=6, column=0, padx=16, pady=(0, 16), sticky="ew")
         self.role_combo.set(_ROLE_COMBO_LABELS[-1])
 
         if user:
@@ -1204,7 +1249,7 @@ class AddEditUserModal(ctk.CTkToplevel):
                 self.role_combo.set(_ROLE_COMBO_LABELS[0])
 
         bf = ctk.CTkFrame(self, fg_color="transparent")
-        bf.grid(row=6, column=0, padx=16, pady=12, sticky="ew")
+        bf.grid(row=7, column=0, padx=16, pady=12, sticky="ew")
         bf.grid_columnconfigure((0, 1), weight=1)
         ctk.CTkButton(
             bf,

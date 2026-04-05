@@ -8,6 +8,9 @@ load_dotenv()
 # Project Root
 PROJECT_ROOT = Path(__file__).parent
 
+# Application version (shown on login screen, etc.)
+APP_VERSION = "1.0.1"
+
 # Firebase Configuration
 _firebase_credentials_env = os.getenv("FIREBASE_CREDENTIALS_PATH", "").strip()
 if _firebase_credentials_env:
