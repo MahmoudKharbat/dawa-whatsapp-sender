@@ -2,6 +2,9 @@
 serviceAccountKey.json
 *firebase-adminsdk*.json
 
+# Local GitHub PAT for scripts/fix_github.ps1 (never commit)
+gh_token.txt
+
 # Environment variables
 .env
 .env.local
