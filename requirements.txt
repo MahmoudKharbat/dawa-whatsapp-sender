@@ -1,0 +1,9 @@
+customtkinter>=5.0
+bcrypt>=4.0
+firebase-admin>=6.0
+pywhatkit>=5.0
+PyInstaller>=6.0
+python-dotenv>=1.0
+pyautogui>=0.9
+selenium>=4.0
+webdriver-manager>=4.0
