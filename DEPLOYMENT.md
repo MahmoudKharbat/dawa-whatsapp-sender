@@ -1,4 +1,4 @@
-# Deployment Guide
+﻿# Deployment Guide
 
 Complete guide for building and distributing the Dawa WhatsApp Sender as an executable to your team.
 
@@ -60,27 +60,24 @@ pyinstaller --name "Dawa WhatsApp Sender" ^
 
 ```
 deployment/
-├── Dawa WhatsApp Sender.exe
-├── serviceAccountKey.json
-├── SETUP_INSTRUCTIONS.txt
-└── README.md
+ג”ג”€ג”€ Dawa WhatsApp Sender.exe
+ג”ג”€ג”€ serviceAccountKey.json
+ג”ג”€ג”€ SETUP_INSTRUCTIONS.txt
+ג””ג”€ג”€ README.md
 ```
 
-### macOS (.app File)
+### macOS (single executable)
+
+From the project root on a Mac (install dependencies first: `pip install -r requirements.txt`):
 
 ```bash
-source venv/bin/activate
-
-pip install pyinstaller
-
-pyinstaller --name "Dawa WhatsApp Sender" \
-            --onefile \
-            --windowed \
-            --icon="icon.icns" \
-            main.py
+chmod +x scripts/build_mac.sh scripts/make_logo_icns.sh
+./scripts/build_mac.sh
 ```
 
-Output: `dist/Dawa WhatsApp Sender.app`
+This expects an existing `logo.ico` on Windows, and generates `logo.icns` from `logo.png` on macOS (via `sips` / `iconutil`), then runs PyInstaller with `dawa_whatsapp.spec`.
+
+Output: **`dist/DawaWhatsApp`** (GUI, no terminal window). Place **`serviceAccountKey.json`** next to that binary. First launch may require **System Settings ג†’ Privacy & Security** to allow the app (unsigned builds).
 
 To create a DMG installer:
 
@@ -103,10 +100,10 @@ create-dmg "Dawa WhatsApp Sender.app" dist/
 2. Place files in distribution folder:
    ```
    Dawa_WhatsApp_Deployment/
-   ├── Dawa WhatsApp Sender.exe
-   ├── serviceAccountKey.json
-   ├── SETUP_INSTRUCTIONS.txt
-   └── README.md
+   ג”ג”€ג”€ Dawa WhatsApp Sender.exe
+   ג”ג”€ג”€ serviceAccountKey.json
+   ג”ג”€ג”€ SETUP_INSTRUCTIONS.txt
+   ג””ג”€ג”€ README.md
    ```
 3. Zip folder
 4. Share via email or cloud storage (Google Drive, OneDrive, etc.)

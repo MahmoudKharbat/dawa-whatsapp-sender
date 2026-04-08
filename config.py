@@ -1,12 +1,32 @@
 # Configuration and Constants
 import os
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
 
-# Project Root
-PROJECT_ROOT = Path(__file__).parent
+def _app_base_dir() -> Path:
+    """Folder containing the .exe when frozen (PyInstaller), else the project directory."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def _bundle_dir() -> Path:
+    """PyInstaller one-file extraction dir, or project dir in development."""
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent
+
+
+PROJECT_ROOT = _app_base_dir()
+load_dotenv(PROJECT_ROOT / ".env")
+
+# Bundled assets (e.g. logo.png added via PyInstaller --add-data)
+BUNDLE_DIR = _bundle_dir()
+LOGO_PATH = BUNDLE_DIR / "logo.png"
+WHATSAPP_SESSION_DIR = PROJECT_ROOT / "whatsapp_session"
+LOG_FILE_PATH = PROJECT_ROOT / "crm_whatsapp.log"
 
 # Application version (shown on login screen, etc.)
 APP_VERSION = "1.0.1"
@@ -16,7 +36,7 @@ _firebase_credentials_env = os.getenv("FIREBASE_CREDENTIALS_PATH", "").strip()
 if _firebase_credentials_env:
     FIREBASE_CREDENTIALS_PATH = Path(_firebase_credentials_env).expanduser()
 else:
-    default_credentials = PROJECT_ROOT / "serviceAccountKey.json"
+    default_credentials = PROJECT_ROOT / "serviceAccountKey.json"  # beside .exe when packaged
     if default_credentials.exists():
         FIREBASE_CREDENTIALS_PATH = default_credentials
     else:
