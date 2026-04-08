@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Callable, List, Dict, Optional
 import logging
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageChops, ImageDraw
 
 from auth_roles import (
     ROLE_ADMIN,
@@ -18,7 +18,7 @@ from auth_roles import (
     ROLE_MANAGER,
     role_label_ar,
 )
-from config import APP_VERSION
+from config import APP_VERSION, LOGO_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,25 @@ def _display_name(contact: Dict) -> str:
     father = str(contact.get("father_name", "")).strip()
     last = str(contact.get("last_name", "")).strip()
     return " ".join([part for part in (first, father, last) if part]).strip()
+
+
+def _rounded_logo_image(pil_img: Image.Image, radius_ratio: float = 0.18) -> Image.Image:
+    """
+    Return an RGBA copy with rounded corners (corners outside the radius are transparent).
+    radius_ratio is relative to the shorter side (capped so the arc fits).
+    """
+    im = pil_img.convert("RGBA")
+    w, h = im.size
+    if w < 2 or h < 2:
+        return im
+    rad = max(1, int(min(w, h) * radius_ratio))
+    rad = min(rad, min(w, h) // 2)
+    mask = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rounded_rectangle((0, 0, w, h), radius=rad, fill=255)
+    r, g, b, a = im.split()
+    new_a = ImageChops.multiply(a, mask)
+    return Image.merge("RGBA", (r, g, b, new_a))
 
 
 class ContactRow(ctk.CTkFrame):
@@ -319,14 +338,14 @@ class SearchBar(ctk.CTkFrame):
         add_btn.grid(row=0, column=4, padx=10, pady=10)
 
         self._logo_image = None
-        logo_path = Path(__file__).with_name("logo.png")
+        logo_path = LOGO_PATH
         if logo_path.exists():
             try:
-                pil_img = Image.open(logo_path)
+                pil_img = _rounded_logo_image(Image.open(logo_path))
                 self._logo_image = ctk.CTkImage(
                     light_image=pil_img,
                     dark_image=pil_img,
-                    size=(40, 40)
+                    size=(50, 50)
                 )
                 logo_label = ctk.CTkLabel(self, text="", image=self._logo_image)
                 logo_label.grid(row=0, column=5, padx=10, pady=10, sticky="e")
@@ -1040,14 +1059,14 @@ class LoginApp(ctk.CTk):
         self._bootstrap_mode = db.count_users() == 0
 
         self._login_logo_image = None
-        logo_path = Path(__file__).with_name("logo.png")
+        logo_path = LOGO_PATH
         if logo_path.exists():
             try:
-                pil_img = Image.open(logo_path)
+                pil_img = _rounded_logo_image(Image.open(logo_path))
                 self._login_logo_image = ctk.CTkImage(
                     light_image=pil_img,
                     dark_image=pil_img,
-                    size=(52, 52),
+                    size=(70, 65),
                 )
                 ctk.CTkLabel(self, text="", image=self._login_logo_image).grid(
                     row=0, column=0, padx=(16, 6), pady=(18, 4), sticky="nw"
@@ -1058,28 +1077,19 @@ class LoginApp(ctk.CTk):
         ctk.CTkLabel(
             self,
             text="مرسل واتساب الدعوة",
-            font=("Arial", 18, "bold"),
-        ).grid(row=0, column=1, padx=(0, 20), pady=(24, 8), sticky="ne")
+            font=("Arial", 20, "bold"),
+        ).grid(row=0, column=1, padx=(0, 20), pady=(24, 8), sticky="e")
 
-        subtitle = (
-            "أنشئ حساب المسؤول الأول (اسم مستخدم وكلمة مرور)"
-            if self._bootstrap_mode
-            else "أدخل بيانات الدخول"
-        )
-        ctk.CTkLabel(self, text=subtitle, font=("Arial", 12), text_color="#aaaaaa").grid(
-            row=1, column=0, columnspan=2, padx=20, pady=(0, 16), sticky="e"
-        )
-
-        ctk.CTkLabel(self, text="اسم المستخدم:", font=("Arial", 12, "bold")).grid(
+        ctk.CTkLabel(self, text=":اسم المستخدم", font=("Arial", 16, "bold")).grid(
             row=2, column=0, columnspan=2, padx=20, pady=(8, 4), sticky="e"
         )
-        self.user_entry = ctk.CTkEntry(self, font=("Arial", 13), height=36, justify="right")
+        self.user_entry = ctk.CTkEntry(self, font=("Arial", 14), height=36, justify="right")
         self.user_entry.grid(row=3, column=0, columnspan=2, padx=20, pady=(0, 10), sticky="ew")
 
-        ctk.CTkLabel(self, text="كلمة المرور:", font=("Arial", 12, "bold")).grid(
+        ctk.CTkLabel(self, text=":كلمة المرور", font=("Arial", 16, "bold")).grid(
             row=4, column=0, columnspan=2, padx=20, pady=(8, 4), sticky="e"
         )
-        self.pass_entry = ctk.CTkEntry(self, font=("Arial", 13), height=36, show="*", justify="right")
+        self.pass_entry = ctk.CTkEntry(self, font=("Arial", 14), height=36, show="*", justify="right")
         self.pass_entry.grid(row=5, column=0, columnspan=2, padx=20, pady=(0, 4), sticky="ew")
 
         self._login_show_password = tk.BooleanVar(value=False)
@@ -1096,7 +1106,7 @@ class LoginApp(ctk.CTk):
             text="إظهار كلمة المرور",
             variable=self._login_show_password,
             command=_sync_login_password_visibility,
-            font=("Arial", 11),
+            font=("Arial", 14),
         )
         self._login_show_pw_check.grid(row=6, column=0, columnspan=2, padx=20, pady=(0, 8), sticky="e")
 
@@ -1119,7 +1129,7 @@ class LoginApp(ctk.CTk):
         ctk.CTkButton(
             self,
             text=btn_text,
-            font=("Arial", 14, "bold"),
+            font=("Arial", 16, "bold"),
             height=40,
             fg_color="#25d366",
             hover_color="#20c354",
@@ -1130,7 +1140,7 @@ class LoginApp(ctk.CTk):
         ctk.CTkLabel(
             self,
             text=APP_VERSION,
-            font=("Arial", 11),
+            font=("Arial", 13),
             text_color="#888888",
         ).grid(row=11, column=0, columnspan=2, padx=20, pady=(0, 14), sticky="s")
 

@@ -34,6 +34,7 @@ from config import (
     WHATSAPP_LOGIN_TIMEOUT_SEC,
     WHATSAPP_MEDIA_POST_CLEAR_HOLD_SEC,
     WHATSAPP_MEDIA_SEND_CONFIRM_TIMEOUT_SEC,
+    WHATSAPP_SESSION_DIR,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,8 @@ class WhatsAppSender:
     def _create_fresh_driver(self) -> webdriver.Chrome:
         """Start Chrome with persistent profile and wait until WhatsApp main UI is ready."""
         chrome_options = Options()
-        user_data_dir = os.path.join(os.getcwd(), "whatsapp_session")
+        user_data_dir = str(WHATSAPP_SESSION_DIR)
+        WHATSAPP_SESSION_DIR.mkdir(parents=True, exist_ok=True)
         chrome_options.add_argument(f"user-data-dir={user_data_dir}")
 
         service = Service(ChromeDriverManager().install())

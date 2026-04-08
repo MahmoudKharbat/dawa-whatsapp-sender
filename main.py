@@ -12,7 +12,8 @@ from pathlib import Path
 from auth_roles import can_use_messaging, can_manage_users
 from config import (
     WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE,
-    BG_COLOR, SECONDARY_COLOR, ACCENT_COLOR, FIREBASE_CREDENTIALS_PATH
+    BG_COLOR, SECONDARY_COLOR, ACCENT_COLOR, FIREBASE_CREDENTIALS_PATH,
+    LOG_FILE_PATH,
 )
 from database import FirebaseDatabase
 from whatsapp_sender import WhatsAppSender
@@ -48,7 +49,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("crm_whatsapp.log", encoding="utf-8"),
+        logging.FileHandler(str(LOG_FILE_PATH), encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
     ],
     force=True,
@@ -131,15 +132,8 @@ class DawaWhatsApp(ctk.CTk):
 
         self.header_bar = ctk.CTkFrame(self, fg_color=BG_COLOR, height=70)
         self.header_bar.grid(row=0, column=0, sticky="ew", padx=0, pady=0)
-        self.header_bar.grid_columnconfigure(0, weight=1)
-        self.search_bar = SearchBar(
-            self.header_bar,
-            on_search=self._on_search,
-            on_add=self._on_add_contact,
-            fg_color=SECONDARY_COLOR,
-            height=70,
-        )
-        self.search_bar.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
+        self.header_bar.grid_columnconfigure(0, weight=0)
+        self.header_bar.grid_columnconfigure(1, weight=1)
         ctk.CTkButton(
             self.header_bar,
             text="تسجيل الخروج",
@@ -149,7 +143,15 @@ class DawaWhatsApp(ctk.CTk):
             fg_color="#555555",
             hover_color="#666666",
             command=self._do_logout,
-        ).grid(row=0, column=1, padx=(8, 12), pady=10, sticky="e")
+        ).grid(row=0, column=0, padx=(12, 8), pady=10, sticky="w")
+        self.search_bar = SearchBar(
+            self.header_bar,
+            on_search=self._on_search,
+            on_add=self._on_add_contact,
+            fg_color=SECONDARY_COLOR,
+            height=70,
+        )
+        self.search_bar.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
 
         self.workspace = ctk.CTkFrame(self, fg_color=BG_COLOR)
         self.workspace.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 6))
@@ -165,7 +167,7 @@ class DawaWhatsApp(ctk.CTk):
 
             self.tabview = ctk.CTkTabview(self.workspace, command=_on_tab_changed)
             self.tabview.grid(row=0, column=0, sticky="nsew")
-            tab_contacts = self.tabview.add("جهات الاتصال")
+            tab_contacts = self.tabview.add("الإتصال جهات")
             tab_users = self.tabview.add("المستخدمون")
             self._build_contacts_column(tab_contacts)
             tab_users.grid_columnconfigure(0, weight=1)
