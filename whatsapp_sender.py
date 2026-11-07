@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional
 
 from selenium import webdriver
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import (
+    SessionNotCreatedException,
+    StaleElementReferenceException,
+    TimeoutException,
+)
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.action_chains import ActionChains
@@ -25,6 +29,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
 from config import (
+    DAWA_CHROME_EXTRA_ARGS,
+    DAWA_CHROME_NO_SANDBOX,
     MAX_DELAY,
     MIN_DELAY,
     WHATSAPP_CHAT_NAV_PAUSE_SEC,
@@ -95,15 +101,55 @@ class WhatsAppSender:
                     logger.warning(f"Error closing browser: {e}")
                 self._driver = None
 
+    @staticmethod
+    def _build_chrome_options(user_data_dir: str) -> Options:
+        """
+        Flags that reduce 'DevToolsActivePort' / Chrome crashed immediately on Windows and
+        locked corporate/antivirus environments.
+        """
+        opts = Options()
+        opts.add_argument(f"user-data-dir={user_data_dir}")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("--no-first-run")
+        opts.add_argument("--no-default-browser-check")
+        opts.add_argument("--disable-extensions")
+        opts.add_argument("--disable-background-networking")
+        opts.add_argument("--disable-sync")
+        opts.add_argument("--window-size=1280,900")
+        opts.add_argument(f"--remote-debugging-port={random.randint(9333, 19999)}")
+        opts.add_experimental_option("excludeSwitches", ["enable-logging"])
+        if DAWA_CHROME_NO_SANDBOX:
+            opts.add_argument("--no-sandbox")
+            opts.add_argument("--disable-setuid-sandbox")
+        for extra in DAWA_CHROME_EXTRA_ARGS:
+            if extra.startswith("--"):
+                opts.add_argument(extra)
+        return opts
+
     def _create_fresh_driver(self) -> webdriver.Chrome:
         """Start Chrome with persistent profile and wait until WhatsApp main UI is ready."""
-        chrome_options = Options()
-        user_data_dir = str(WHATSAPP_SESSION_DIR)
         WHATSAPP_SESSION_DIR.mkdir(parents=True, exist_ok=True)
-        chrome_options.add_argument(f"user-data-dir={user_data_dir}")
+        user_data_dir = str(WHATSAPP_SESSION_DIR.resolve())
 
+        chrome_options = self._build_chrome_options(user_data_dir)
         service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
+        try:
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+        except SessionNotCreatedException as e:
+            lock = WHATSAPP_SESSION_DIR / "SingletonLock"
+            logger.error(
+                "Chrome failed to start (session not created). Common fixes:\n"
+                "  1) Close every Chrome window that might be using profile: %s\n"
+                "  2) If no Chrome is open, delete this file if it exists: %s\n"
+                "  3) Set environment variable DAWA_CHROME_NO_SANDBOX=1 and retry\n"
+                "  4) Temporarily allow Chrome/chromedriver in antivirus / Smart App Control\n"
+                "Original error: %s",
+                user_data_dir,
+                lock,
+                e,
+            )
+            raise
         with self._driver_lock:
             self._driver = driver
 
@@ -682,63 +728,489 @@ class WhatsAppSender:
         logger.error("Could not send follow-up text after image")
         return False
 
+    @staticmethod
+    def _accept_has_video(accept: str) -> bool:
+        a = (accept or "").lower()
+        return any(tok in a for tok in ("video/", "mp4", "3gpp", "quicktime"))
+
+    @classmethod
+    def _gallery_file_input_priority(cls, accept: str) -> int:
+        """
+        Higher score = more likely the Photos & videos / gallery picker.
+
+        Notes about current WhatsApp Web (observed):
+          - Gallery input:   accept="image/*,video/mp4,video/3gpp,video/quicktime"
+          - Sticker input:   accept="image/*"  (or image/png,image/webp on some builds)
+          - Document input:  accept="*" / no accept
+
+        So an input that only accepts image/* (and no video) is almost certainly the
+        sticker uploader. We score it negative to avoid ever picking it for an image.
+        """
+        a = (accept or "").lower().strip()
+        if not a:
+            return 5
+        score = 0
+        if "sticker" in a:
+            score -= 500
+        has_video = cls._accept_has_video(a)
+        if has_video:
+            score += 200
+        if has_video and ("image/*" in a or "image/" in a):
+            score += 60
+        if not has_video and "image/*" in a:
+            # Almost certainly sticker on current WhatsApp Web.
+            score -= 150
+        if not has_video and "image/" in a and "webp" in a:
+            score -= 250
+        if a in ("*/*", "*"):
+            score += 10
+        return score
+
+    @classmethod
+    def _file_input_signature(cls, inp: Any) -> str:
+        try:
+            wa_id = inp.get_attribute("id") or ""
+            accept = inp.get_attribute("accept") or ""
+            multi = inp.get_attribute("multiple") or ""
+            return f"{wa_id}|{accept}|{multi}|{inp.id}"
+        except Exception:
+            return ""
+
+    @classmethod
+    def _collect_file_input_signatures(cls, driver: webdriver.Chrome) -> set:
+        out = set()
+        try:
+            for inp in driver.find_elements(By.CSS_SELECTOR, "input[type='file']"):
+                sig = cls._file_input_signature(inp)
+                if sig:
+                    out.add(sig)
+        except Exception:
+            pass
+        return out
+
+    @classmethod
+    def _sorted_gallery_first_file_inputs(cls, driver: webdriver.Chrome) -> List[Any]:
+        inps = driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
+
+        def _score(inp: Any) -> int:
+            try:
+                return cls._gallery_file_input_priority(inp.get_attribute("accept") or "")
+            except Exception:
+                return -999
+
+        return sorted(inps, key=_score, reverse=True)
+
+    @classmethod
+    def _send_keys_to_fresh_gallery_input(
+        cls,
+        driver: webdriver.Chrome,
+        path_str: str,
+        prior_sigs: set,
+        timeout_sec: float = 10.0,
+    ) -> Optional[str]:
+        """
+        After clicking Photos & videos, poll for a file input whose accept contains
+        video/* and call send_keys. The lookup + send_keys are done together each
+        iteration so we never use a reference that became stale.
+
+        Returns the accept string of the chosen input on success, else None.
+        """
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            candidates: List[Any] = []
+            try:
+                inputs = driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
+            except Exception:
+                inputs = []
+
+            preferred: List[Any] = []
+            others: List[Any] = []
+            for inp in inputs:
+                try:
+                    accept = (inp.get_attribute("accept") or "").lower()
+                except StaleElementReferenceException:
+                    continue
+                except Exception:
+                    continue
+                if not cls._accept_has_video(accept):
+                    continue
+                try:
+                    sig = cls._file_input_signature(inp)
+                except StaleElementReferenceException:
+                    continue
+                except Exception:
+                    sig = ""
+                if sig and sig not in prior_sigs:
+                    preferred.append(inp)
+                else:
+                    others.append(inp)
+            candidates = preferred + others
+
+            for inp in candidates:
+                try:
+                    accept = (inp.get_attribute("accept") or "").lower()
+                except StaleElementReferenceException:
+                    continue
+                except Exception:
+                    accept = ""
+                try:
+                    inp.send_keys(path_str)
+                    return accept
+                except StaleElementReferenceException:
+                    continue
+                except Exception as e:
+                    logger.debug("send_keys to gallery input failed: %s", e)
+                    continue
+            time.sleep(0.2)
+        return None
+
+    @classmethod
+    def _dismiss_attach_menu(cls, driver: webdriver.Chrome) -> None:
+        """Close any open attach menu/preview overlays so next iteration starts clean."""
+        try:
+            ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+        except Exception:
+            pass
+
+    @classmethod
+    def _attach_menu_is_open(cls, driver: webdriver.Chrome) -> bool:
+        """Heuristic: an attach menu is open if menu items / sticker option are visible."""
+        script = """
+        const nodes = document.querySelectorAll(
+          '[role="menu"] [role="menuitem"], [role="application"] [role="menuitem"], [role="menuitem"]'
+        );
+        for (const n of nodes) {
+          const r = n.getBoundingClientRect();
+          if (r.width > 4 && r.height > 4) return true;
+        }
+        return false;
+        """
+        try:
+            return bool(driver.execute_script(script))
+        except Exception:
+            return False
+
+    @classmethod
+    def _open_attach_menu(cls, driver: webdriver.Chrome) -> bool:
+        """
+        Open the chat attach (+) menu. Robust to WhatsApp Web icon-name changes and locales.
+        Scoped to the open chat (#main / footer) so we never click a sidebar '+'.
+        """
+        if cls._attach_menu_is_open(driver):
+            return True
+
+        script = r"""
+        const ICON_SUBSTRINGS = ['plus','attach','clip','paperclip','add'];
+        const LABEL_SUBSTRINGS = [
+          'attach', 'add attachment', 'attachment',
+          'إرفاق', 'أرفق', 'مرفق', 'إضافة', 'مرفقات'
+        ];
+        function visible(el) {
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          if (r.width < 4 || r.height < 4) return false;
+          const cs = getComputedStyle(el);
+          if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') return false;
+          return true;
+        }
+        function clickable(el) {
+          while (el && el !== document.body) {
+            const role = (el.getAttribute && el.getAttribute('role')) || '';
+            if (el.tagName === 'BUTTON' || el.tagName === 'A' || role === 'button' || el.tabIndex >= 0) {
+              return el;
+            }
+            el = el.parentElement;
+          }
+          return null;
+        }
+        const scopes = [];
+        const main = document.querySelector('#main');
+        if (main) {
+          scopes.push(main);
+          const mainFooter = main.querySelector('footer');
+          if (mainFooter) scopes.unshift(mainFooter);
+        }
+        // Last resort only — any footer / document. We bias toward #main to avoid
+        // the sidebar attach (sticker / status compose) controls.
+        document.querySelectorAll('footer').forEach(f => {
+          if (!scopes.includes(f)) scopes.push(f);
+        });
+        scopes.push(document);
+        for (const scope of scopes) {
+          // Match by data-icon substring (WA renames these often, e.g. wds-ic-plus)
+          const iconNodes = scope.querySelectorAll('[data-icon], svg[data-icon]');
+          for (const ic of iconNodes) {
+            const name = (ic.getAttribute('data-icon') || '').toLowerCase();
+            if (!ICON_SUBSTRINGS.some(s => name.includes(s))) continue;
+            const btn = clickable(ic);
+            if (btn && visible(btn)) {
+              btn.click();
+              return 'icon:' + name;
+            }
+          }
+          // Match by aria-label / title (locale-tolerant)
+          const labeled = scope.querySelectorAll('[aria-label], [title]');
+          for (const el of labeled) {
+            const lbl = ((el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '')).toLowerCase();
+            if (!LABEL_SUBSTRINGS.some(s => lbl.includes(s))) continue;
+            const btn = clickable(el);
+            if (btn && visible(btn)) {
+              btn.click();
+              return 'label:' + lbl.slice(0, 60);
+            }
+          }
+        }
+        return null;
+        """
+        try:
+            clicked_via = driver.execute_script(script)
+        except Exception as e:
+            logger.warning("Attach menu JS click failed: %s", e)
+            clicked_via = None
+
+        if clicked_via:
+            logger.info("Opened attach menu via %s", clicked_via)
+            try:
+                WebDriverWait(driver, 3).until(lambda d: cls._attach_menu_is_open(d))
+            except TimeoutException:
+                logger.warning("Attach button clicked but menu did not appear")
+                return False
+            return True
+
+        try:
+            existing = driver.execute_script(
+                "return Array.from(document.querySelectorAll('[data-icon]'))"
+                ".map(e => e.getAttribute('data-icon')).filter(Boolean).slice(0, 30);"
+            )
+            logger.warning("Attach button not found. Visible data-icons sample: %s", existing)
+        except Exception:
+            pass
+        return False
+
+    @classmethod
+    def _click_photos_and_videos_menu_item_js(cls, driver: webdriver.Chrome) -> bool:
+        """
+        Click the Photos & videos row inside the open attach menu (locale-tolerant).
+        """
+        script = """
+        const norm = (s) => (s || '').toLowerCase();
+        const nodes = document.querySelectorAll(
+          '[role="menuitem"], [role="menuitemcheckbox"], [role="button"], li, div[tabindex="0"]'
+        );
+        for (const el of nodes) {
+          try {
+            const r = el.getBoundingClientRect();
+            if (r.width < 4 || r.height < 4 || r.bottom < 0 || r.top > innerHeight) continue;
+            const text = norm(el.innerText || el.textContent || '');
+            const label = norm(el.getAttribute('aria-label') || '');
+            const hay = text + ' | ' + label;
+            if (hay.includes('sticker') || hay.includes('ملصق')) continue;
+            if (hay.includes('document') || hay.includes('مستند')) continue;
+            const hasPhoto = /photo|picture|image|صور|gallery|galer/i.test(hay);
+            const hasVideo = /video|vidéo|فيديو|mp4/i.test(hay);
+            const arGallery = /صور/.test(hay) && /فيديو/.test(hay);
+            if ((hasPhoto && hasVideo) || arGallery) {
+              el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+              return true;
+            }
+          } catch (e) {}
+        }
+        return false;
+        """
+        try:
+            if driver.execute_script(script):
+                logger.info("Clicked Photos & videos attach option (JS)")
+                return True
+        except Exception:
+            pass
+        return False
+
+    @classmethod
+    def _click_photos_and_videos_menu_item(cls, driver: webdriver.Chrome) -> bool:
+        """Prefer the gallery row so the image is sent as a photo, not a sticker."""
+        if cls._click_photos_and_videos_menu_item_js(driver):
+            return True
+        xps = (
+            "//*[@role='button' or @role='menuitem'][contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'photo') and contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'video')]",
+            "//*[@role='button' or @role='menuitem'][contains(@aria-label,'صور') and contains(@aria-label,'فيديو')]",
+            "//*[@role='button' or @role='menuitem'][contains(translate(@aria-label,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'photo')]",
+            "//*[@role='button' or @role='menuitem'][contains(@aria-label,'صور')]",
+            "//span[contains(.,'Photos and videos') or contains(.,'Photos & videos')]",
+            "//div[contains(.,'Photos and videos') or contains(.,'Photos & videos')]",
+        )
+        for xp in xps:
+            try:
+                for el in driver.find_elements(By.XPATH, xp):
+                    try:
+                        if not el.is_displayed():
+                            continue
+                        hay = (
+                            (el.get_attribute("aria-label") or "")
+                            + " "
+                            + (el.text or "")
+                        ).lower()
+                        if "sticker" in hay or "ملصق" in hay:
+                            continue
+                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                        time.sleep(0.12)
+                        el.click()
+                        logger.info("Clicked Photos & videos attach option (XPath)")
+                        return True
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        return False
+
+    @classmethod
+    def _upload_image_file_as_gallery(cls, driver: webdriver.Chrome, path_str: str) -> bool:
+        """
+        Open attach → Photos & videos and send the file ONLY to the gallery input
+        (must contain video/* in accept). We never fall back to sticker-shaped inputs
+        (image/* alone), because those deliver photos as stickers.
+        """
+        cls._dismiss_attach_menu(driver)
+        time.sleep(0.15)
+
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            prior_sigs = cls._collect_file_input_signatures(driver)
+
+            if not cls._open_attach_menu(driver):
+                logger.warning("Attach menu did not open (attempt %s/%s)", attempt, max_attempts)
+                cls._dismiss_attach_menu(driver)
+                time.sleep(0.5)
+                continue
+            time.sleep(0.45)
+
+            if not cls._click_photos_and_videos_menu_item(driver):
+                logger.warning(
+                    "Photos & videos menu row not found (attempt %s/%s); retrying",
+                    attempt,
+                    max_attempts,
+                )
+                cls._dismiss_attach_menu(driver)
+                time.sleep(0.6)
+                continue
+
+            accept = cls._send_keys_to_fresh_gallery_input(
+                driver, path_str, prior_sigs, timeout_sec=10.0
+            )
+            if accept is not None:
+                logger.info(
+                    "Image path sent to gallery input (accept=%s)",
+                    (accept[:100] + "…") if len(accept) > 100 else accept,
+                )
+                return True
+
+            logger.warning(
+                "No gallery (video/*) file input appeared (attempt %s/%s); reopening attach menu",
+                attempt,
+                max_attempts,
+            )
+            cls._dismiss_attach_menu(driver)
+            time.sleep(0.7)
+
+        logger.error("Could not reach the Photos & videos uploader after %s attempts", max_attempts)
+        return False
+
+    @classmethod
+    def _try_click_continue_to_chat(cls, driver: webdriver.Chrome) -> bool:
+        """
+        web.whatsapp.com/send?phone=… sometimes shows a 'Use here' / 'Continue to chat'
+        confirmation before opening the chat. Click it if present.
+        """
+        script = r"""
+        const KEYS = [
+          'continue to chat', 'use here', 'open whatsapp', 'use whatsapp',
+          'استخدم هنا', 'استمرار', 'متابعة', 'فتح', 'بدء المحادثة'
+        ];
+        const nodes = document.querySelectorAll('a, button, [role="button"], [role="link"]');
+        for (const n of nodes) {
+          const r = n.getBoundingClientRect();
+          if (r.width < 4 || r.height < 4) continue;
+          const t = ((n.innerText || n.textContent || '') + ' ' + (n.getAttribute('aria-label') || '')).toLowerCase();
+          if (KEYS.some(k => t.includes(k))) {
+            n.click();
+            return t.slice(0, 60);
+          }
+        }
+        return null;
+        """
+        try:
+            label = driver.execute_script(script)
+            if label:
+                logger.info("Clicked 'Continue to chat' prompt: %s", label)
+                return True
+        except Exception:
+            pass
+        return False
+
+    @classmethod
+    def _check_invalid_phone_popup(cls, driver: webdriver.Chrome) -> bool:
+        """Returns True if WhatsApp Web reports the phone number is invalid / not on WA."""
+        script = r"""
+        const KEYS = [
+          'phone number shared via url is invalid',
+          'phone number is not on whatsapp',
+          'invalid phone',
+          'الرقم غير صالح',
+          'هذا الرقم غير مسجل',
+          'غير مسجل في واتساب'
+        ];
+        const text = (document.body && document.body.innerText || '').toLowerCase();
+        return KEYS.some(k => text.includes(k));
+        """
+        try:
+            return bool(driver.execute_script(script))
+        except Exception:
+            return False
+
+    @classmethod
+    def _wait_chat_opened(cls, driver: webdriver.Chrome, timeout_sec: int) -> None:
+        """
+        Wait until a real chat is open in #main (composer present), handling the
+        'Continue to chat' interstitial and the invalid-phone popup.
+        """
+        deadline = time.time() + timeout_sec
+        clicked_continue = False
+        last_log = 0.0
+        while time.time() < deadline:
+            try:
+                if cls._check_invalid_phone_popup(driver):
+                    raise RuntimeError("WhatsApp says the phone number is invalid / not on WhatsApp")
+                main_composer = driver.find_elements(
+                    By.CSS_SELECTOR, "#main footer div[contenteditable='true']"
+                )
+                if main_composer and any(e.is_displayed() for e in main_composer):
+                    return
+                if not clicked_continue and cls._try_click_continue_to_chat(driver):
+                    clicked_continue = True
+                    time.sleep(1.5)
+                    continue
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+            now = time.time()
+            if now - last_log > 6:
+                logger.info("Waiting for chat to open in #main composer...")
+                last_log = now
+            time.sleep(0.6)
+        raise TimeoutException("Chat did not open in #main (composer not visible)")
+
     @classmethod
     def _send_image_message(cls, driver, image_abs_path: str, caption: str) -> bool:
         """
         Upload an image via hidden file inputs, optional caption, then send.
         """
-        WebDriverWait(driver, WHATSAPP_COMPOSER_WAIT_SEC).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "footer"))
-        )
+        cls._wait_chat_opened(driver, WHATSAPP_COMPOSER_WAIT_SEC)
 
         path_str = str(Path(image_abs_path).resolve())
         if os.name == "nt":
             path_str = path_str.replace("/", "\\")
 
-        uploaded = False
-        for inp in driver.find_elements(By.CSS_SELECTOR, "input[type='file']"):
-            try:
-                accept = (inp.get_attribute("accept") or "").lower()
-                if accept and "image" not in accept and "video" not in accept and "*" not in accept:
-                    continue
-                inp.send_keys(path_str)
-                uploaded = True
-                logger.info("Image path sent to file input")
-                break
-            except Exception:
-                continue
-
-        if not uploaded:
-            for inp in driver.find_elements(By.CSS_SELECTOR, "input[type='file']"):
-                try:
-                    inp.send_keys(path_str)
-                    uploaded = True
-                    logger.info("Image path sent to generic file input")
-                    break
-                except Exception:
-                    continue
-
-        if not uploaded:
-            for sel in (
-                "span[data-icon='plus']",
-                "span[data-icon='plus-rounded']",
-                "span[data-icon='attach-menu-plus']",
-                "span[data-icon='clip']",
-            ):
-                try:
-                    driver.find_element(By.CSS_SELECTOR, sel).click()
-                    time.sleep(1.5)
-                    break
-                except Exception:
-                    continue
-            for inp in driver.find_elements(By.CSS_SELECTOR, "input[type='file']"):
-                try:
-                    inp.send_keys(path_str)
-                    uploaded = True
-                    logger.info("Image uploaded after opening attach menu")
-                    break
-                except Exception:
-                    continue
+        uploaded = cls._upload_image_file_as_gallery(driver, path_str)
 
         if not uploaded:
             logger.error("No usable file input for image upload")

@@ -77,6 +77,15 @@ WHATSAPP_IMAGE_PREVIEW_WAIT_SEC = 8  # wait after choosing file until preview/se
 WHATSAPP_MEDIA_SEND_CONFIRM_TIMEOUT_SEC = 45
 WHATSAPP_MEDIA_POST_CLEAR_HOLD_SEC = 5  # extra stable time after preview disappears (upload pipeline)
 
+# Chrome / Selenium (Windows): set DAWA_CHROME_NO_SANDBOX=1 if Chrome crashes on start (DevToolsActivePort).
+# Space-separated extra args: DAWA_CHROME_EXTRA_ARGS="--foo --bar"
+DAWA_CHROME_NO_SANDBOX = os.getenv("DAWA_CHROME_NO_SANDBOX", "").strip().lower() in ("1", "true", "yes")
+DAWA_CHROME_EXTRA_ARGS = [
+    a.strip()
+    for a in os.getenv("DAWA_CHROME_EXTRA_ARGS", "").replace(";", " ").split()
+    if a.strip()
+]
+
 # UI Sizing
 HEADER_HEIGHT = 80
 FOOTER_HEIGHT = 120

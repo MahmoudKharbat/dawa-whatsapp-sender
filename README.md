@@ -205,6 +205,12 @@ dawa-whatsapp-sender/
 - ✅ Verify `MIN_DELAY` and `MAX_DELAY` in config.py
 - ✅ Check system time sync (affects delays)
 
+**Chrome crashes on start (`DevToolsActivePort`, `session not created`):**
+- ✅ Close all Chrome windows; only one process can use the `whatsapp_session` profile folder
+- ✅ If Chrome is closed but it still fails, delete `whatsapp_session\SingletonLock` (Windows) when no `chrome.exe` is running
+- ✅ Set `DAWA_CHROME_NO_SANDBOX=1` in `.env` or the environment, then restart the app
+- ✅ Allow `chrome.exe` and `chromedriver.exe` in antivirus / Windows Smart App Control
+
 ### UI Not Showing
 - ✅ Check Python version: `python --version` (3.8+)
 - ✅ Verify customtkinter installed: `pip install customtkinter`
